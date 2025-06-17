@@ -1,0 +1,929 @@
+// backend/src/services/gaebService.ts
+import { create } from 'xmlbuilder2';
+import { LVPosition } from '@prisma/client';
+
+export class GAEBService {
+  /**
+   * Generiert GAEB X31 Format für Ausschreibungen
+   */
+  async generateX31(project: any, positions: LVPosition[]): Promise<string> {
+    const doc = create({ version: '1.0', encoding: 'UTF-8' })
+      .ele('GAEB', {
+        xmlns: 'http://www.gaeb.de/GAEB_DA_XML/200407',
+        version: '3.2'
+      });
+
+    // Award Info
+    const awardInfo = doc.ele('Award');
+    awardInfo.ele('DP', '83'); // GAEB Version
+    awardInfo.ele('Version', 'GAEB DA XML 3.2');
+    awardInfo.ele('Date').txt(new Date().toISOString().split('T')[0]);
+
+    // Project Info
+    const prjInfo = awardInfo.ele('PrjInfo');
+    prjInfo.ele('Name').txt(project.name);
+    prjInfo.ele('LblPrj').txt(project.name);
+    prjInfo.ele('Location').txt(project.location || '');
+    prjInfo.ele('Date').txt(new Date().toISOString().split('T')[0]);
+
+    // BoQ (Bill of Quantities)
+    const boq = awardInfo.ele('BoQ');
+    boq.ele('BoQInfo')
+      .ele('Name').txt(`LV - ${project.name}`);
+
+    // BoQBody mit Positionen
+    const boqBody = boq.ele('BoQBody');
+    
+    // Gruppiere Positionen nach Gewerk
+    const groupedPositions = this.groupPositionsByTrade(positions);
+    
+    for (const [trade, tradePositions] of Object.entries(groupedPositions)) {
+      // Titel für Gewerk
+      const boqItem = boqBody.ele('BoQItem', { ID: this.generateId() });
+      boqItem.ele('Qty').txt('0');
+      boqItem.ele('QtyUnit');
+      
+      const itemText = boqItem.ele('Text');
+      itemText.ele('DetailTxt')
+        .ele('Text')
+        .ele('p').txt(trade);
+      
+      // Positionen des Gewerks
+      tradePositions.forEach((position, index) => {
+        const item = boqBody.ele('BoQItem', { 
+          ID: this.generateId(),
+          RNoPart: position.positionNumber
+        });
+        
+        item.ele('Qty').txt(position.quantity.toString());
+        item.ele('QtyUnit').txt(position.unit);
+        
+        const text = item.ele('Text');
+        text.ele('CompleteText')
+          .ele('DetailTxt')
+          .ele('Text')
+          .ele('p').txt(position.longDescription || position.shortDescription);
+        
+        text.ele('OutlineText')
+          .ele('OutlTxt')
+          .ele('TextOutlTxt').txt(position.shortDescription);
+      });
+    }
+
+    return doc.end({ prettyPrint: true });
+  }
+
+  /**
+   * Generiert GAEB D86 Format für Angebotsabgabe
+   */
+  async generateD86(project: any, positions: LVPosition[]): Promise<string> {
+    const doc = create({ version: '1.0', encoding: 'UTF-8' })
+      .ele('GAEB', {
+        xmlns: 'http://www.gaeb.de/GAEB_DA_XML/200407',
+        version: '3.2'
+      });
+
+    const tender = doc.ele('Tender');
+    tender.ele('DP', '86');
+    tender.ele('Version', 'GAEB DA XML 3.2');
+    tender.ele('Date').txt(new Date().toISOString().split('T')[0]);
+
+    // Tender Info
+    const tenderInfo = tender.ele('TenderInfo');
+    tenderInfo.ele('Name').txt(`Angebot - ${project.name}`);
+    
+    // BoQ mit Preisen
+    const boq = tender.ele('BoQ');
+    const boqInfo = boq.ele('BoQInfo');
+    boqInfo.ele('Name').txt(`Angebot LV - ${project.name}`);
+    boqInfo.ele('Currency').txt('EUR');
+
+    const boqBody = boq.ele('BoQBody');
+    
+    positions.forEach(position => {
+      const item = boqBody.ele('BoQItem', {
+        ID: this.generateId(),
+        RNoPart: position.positionNumber
+      });
+      
+      item.ele('Qty').txt(position.quantity.toString());
+      item.ele('QtyUnit').txt(position.unit);
+      item.ele('UP').txt((position.unitPrice || 0).toFixed(2));
+      item.ele('IT').txt((position.totalPrice || 0).toFixed(2));
+      
+      const text = item.ele('Text');
+      text.ele('OutlineText')
+        .ele('OutlTxt')
+        .ele('TextOutlTxt').txt(position.shortDescription);
+    });
+
+    // Totals
+    const totals = boq.ele('Totals');
+    const total = positions.reduce((sum, pos) => sum + (pos.totalPrice || 0), 0);
+    totals.ele('Total').txt(total.toFixed(2));
+
+    return doc.end({ prettyPrint: true });
+  }
+
+  /**
+   * Parst eingehende GAEB-Dateien
+   */
+  async parseGAEB(xmlContent: string): Promise<{
+    projectInfo: any;
+    positions: any[];
+  }> {
+    const doc = create(xmlContent);
+    const root = doc.root();
+    
+    // Extrahiere Projektinfo
+    const prjInfo = root.find((node: any) => node.node.nodeName === 'PrjInfo')[0];
+    const projectInfo = {
+      name: prjInfo?.find((n: any) => n.node.nodeName === 'Name')[0]?.node.textContent || '',
+      location: prjInfo?.find((n: any) => n.node.nodeName === 'Location')[0]?.node.textContent || '',
+    };
+
+    // Extrahiere Positionen
+    const positions: any[] = [];
+    const boqItems = root.find((node: any) => node.node.nodeName === 'BoQItem');
+    
+    boqItems.forEach((item: any) => {
+      const qty = item.find((n: any) => n.node.nodeName === 'Qty')[0]?.node.textContent;
+      const unit = item.find((n: any) => n.node.nodeName === 'QtyUnit')[0]?.node.textContent;
+      const text = item.find((n: any) => n.node.nodeName === 'Text')[0];
+      
+      if (qty && parseFloat(qty) > 0) {
+        positions.push({
+          positionNumber: item.node.getAttribute('RNoPart') || '',
+          quantity: parseFloat(qty),
+          unit: unit || '',
+          description: this.extractText(text)
+        });
+      }
+    });
+
+    return { projectInfo, positions };
+  }
+
+  private groupPositionsByTrade(positions: LVPosition[]): Record<string, LVPosition[]> {
+    return positions.reduce((acc, pos) => {
+      const trade = pos.trade || 'Sonstige';
+      if (!acc[trade]) acc[trade] = [];
+      acc[trade].push(pos);
+      return acc;
+    }, {} as Record<string, LVPosition[]>);
+  }
+
+  private generateId(): string {
+    return `ID${Date.now()}${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  private extractText(textNode: any): string {
+    if (!textNode) return '';
+    
+    const texts: string[] = [];
+    textNode.find((n: any) => n.node.nodeName === 'p').forEach((p: any) => {
+      texts.push(p.node.textContent || '');
+    });
+    
+    return texts.join(' ');
+  }
+}
+
+// backend/src/services/pdfService.ts
+import PDFDocument from 'pdfkit';
+import { LVPosition } from '@prisma/client';
+
+interface PDFOptions {
+  includeLogos?: boolean;
+  includePrices?: boolean;
+  detailedDescriptions?: boolean;
+  companyInfo?: {
+    name: string;
+    address?: string;
+    phone?: string;
+    email?: string;
+    logo?: Buffer;
+  };
+}
+
+export class PDFService {
+  async generateLVPDF(
+    project: any,
+    positions: LVPosition[],
+    options: PDFOptions = {}
+  ): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const doc = new PDFDocument({
+        size: 'A4',
+        margins: {
+          top: 50,
+          bottom: 50,
+          left: 50,
+          right: 50
+        }
+      });
+
+      const chunks: Buffer[] = [];
+      doc.on('data', (chunk) => chunks.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+
+      // Header mit Logo
+      if (options.includeLogos && options.companyInfo?.logo) {
+        doc.image(options.companyInfo.logo, 50, 50, { width: 150 });
+        doc.moveDown(2);
+      }
+
+      // Firmeninfo
+      if (options.companyInfo) {
+        doc.fontSize(10)
+          .text(options.companyInfo.name, { align: 'right' })
+          .text(options.companyInfo.address || '', { align: 'right' })
+          .text(options.companyInfo.phone || '', { align: 'right' })
+          .text(options.companyInfo.email || '', { align: 'right' });
+      }
+
+      // Titel
+      doc.moveDown(2)
+        .fontSize(20)
+        .text('Leistungsverzeichnis', { align: 'center' })
+        .moveDown()
+        .fontSize(16)
+        .text(project.name, { align: 'center' })
+        .moveDown();
+
+      // Projektinfo
+      doc.fontSize(10)
+        .text(`Ort: ${project.location || 'N/A'}`)
+        .text(`Zeitraum: ${project.timeframe || 'N/A'}`)
+        .text(`Datum: ${new Date().toLocaleDateString('de-DE')}`)
+        .moveDown(2);
+
+      // Tabellenkopf
+      this.drawTableHeader(doc, options.includePrices);
+
+      // Positionen
+      let yPosition = doc.y;
+      const groupedPositions = this.groupByTrade(positions);
+      let totalSum = 0;
+
+      for (const [trade, tradePositions] of Object.entries(groupedPositions)) {
+        // Gewerküberschrift
+        if (yPosition > 700) {
+          doc.addPage();
+          yPosition = 50;
+          this.drawTableHeader(doc, options.includePrices);
+        }
+
+        doc.fontSize(12)
+          .fillColor('#2563eb')
+          .text(trade, 50, yPosition)
+          .fillColor('black');
+        
+        yPosition += 20;
+
+        // Positionen des Gewerks
+        for (const position of tradePositions) {
+          if (yPosition > 700) {
+            doc.addPage();
+            yPosition = 50;
+            this.drawTableHeader(doc, options.includePrices);
+          }
+
+          // Position zeichnen
+          doc.fontSize(9);
+          const rowHeight = this.drawPosition(
+            doc, 
+            position, 
+            yPosition, 
+            options
+          );
+          
+          yPosition += rowHeight;
+          
+          if (options.includePrices) {
+            totalSum += position.totalPrice || 0;
+          }
+        }
+        
+        yPosition += 10;
+      }
+
+      // Summe
+      if (options.includePrices) {
+        if (yPosition > 650) {
+          doc.addPage();
+          yPosition = 50;
+        }
+
+        doc.fontSize(10)
+          .moveTo(50, yPosition)
+          .lineTo(545, yPosition)
+          .stroke();
+
+        yPosition += 10;
+        
+        doc.fontSize(12)
+          .text('Gesamtsumme netto:', 350, yPosition)
+          .text(
+            `${totalSum.toLocaleString('de-DE', { 
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2 
+            })} €`,
+            450, yPosition, { align: 'right' }
+          );
+
+        yPosition += 20;
+        
+        const vat = totalSum * 0.19;
+        doc.fontSize(10)
+          .text('zzgl. 19% MwSt:', 350, yPosition)
+          .text(
+            `${vat.toLocaleString('de-DE', { 
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2 
+            })} €`,
+            450, yPosition, { align: 'right' }
+          );
+
+        yPosition += 20;
+        
+        doc.fontSize(12)
+          .font('Helvetica-Bold')
+          .text('Gesamtsumme brutto:', 350, yPosition)
+          .text(
+            `${(totalSum + vat).toLocaleString('de-DE', { 
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2 
+            })} €`,
+            450, yPosition, { align: 'right' }
+          );
+      }
+
+      doc.end();
+    });
+  }
+
+  private drawTableHeader(doc: PDFKit.PDFDocument, includePrices: boolean = true) {
+    const y = doc.y;
+    
+    doc.fontSize(10)
+      .font('Helvetica-Bold')
+      .text('Pos.', 50, y, { width: 40 })
+      .text('Bezeichnung', 95, y, { width: 200 })
+      .text('Menge', 300, y, { width: 50, align: 'right' })
+      .text('Einh.', 355, y, { width: 40 });
+    
+    if (includePrices) {
+      doc.text('EP (€)', 400, y, { width: 60, align: 'right' })
+        .text('GP (€)', 465, y, { width: 80, align: 'right' });
+    }
+    
+    doc.moveTo(50, y + 15)
+      .lineTo(545, y + 15)
+      .stroke()
+      .font('Helvetica');
+    
+    doc.y = y + 25;
+  }
+
+  private drawPosition(
+    doc: PDFKit.PDFDocument,
+    position: LVPosition,
+    y: number,
+    options: PDFOptions
+  ): number {
+    const startY = y;
+    
+    // Positionsnummer
+    doc.text(position.positionNumber, 50, y, { width: 40 });
+    
+    // Beschreibung
+    const descriptionWidth = options.includePrices ? 200 : 350;
+    const description = options.detailedDescriptions && position.longDescription
+      ? position.longDescription
+      : position.shortDescription;
+    
+    doc.text(description, 95, y, { 
+      width: descriptionWidth,
+      lineGap: 2
+    });
+    
+    // Menge und Einheit
+    doc.text(
+      position.quantity.toLocaleString('de-DE'),
+      300, y, { width: 50, align: 'right' }
+    );
+    doc.text(position.unit, 355, y, { width: 40 });
+    
+    // Preise
+    if (options.includePrices) {
+      doc.text(
+        (position.unitPrice || 0).toLocaleString('de-DE', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }),
+        400, y, { width: 60, align: 'right' }
+      );
+      
+      doc.text(
+        (position.totalPrice || 0).toLocaleString('de-DE', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }),
+        465, y, { width: 80, align: 'right' }
+      );
+    }
+    
+    // Berechne benötigte Höhe
+    const textHeight = doc.heightOfString(description, {
+      width: descriptionWidth,
+      lineGap: 2
+    });
+    
+    return Math.max(textHeight + 10, 20);
+  }
+
+  private groupByTrade(positions: LVPosition[]): Record<string, LVPosition[]> {
+    return positions.reduce((acc, pos) => {
+      const trade = pos.trade || 'Sonstige Leistungen';
+      if (!acc[trade]) acc[trade] = [];
+      acc[trade].push(pos);
+      return acc;
+    }, {} as Record<string, LVPosition[]>);
+  }
+}
+
+// backend/src/services/excelService.ts
+import ExcelJS from 'exceljs';
+import { LVPosition } from '@prisma/client';
+
+export class ExcelService {
+  async generateLVExcel(
+    project: any,
+    positions: LVPosition[],
+    includePrices: boolean = true
+  ): Promise<Buffer> {
+    const workbook = new ExcelJS.Workbook();
+    
+    // Metadaten
+    workbook.creator = 'LV-Generator Pro';
+    workbook.created = new Date();
+    workbook.modified = new Date();
+    
+    // Hauptarbeitsblatt
+    const worksheet = workbook.addWorksheet('Leistungsverzeichnis', {
+      properties: { tabColor: { argb: '2563eb' } },
+      pageSetup: {
+        paperSize: 9, // A4
+        orientation: 'landscape',
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0
+      }
+    });
+
+    // Spalten definieren
+    worksheet.columns = [
+      { header: 'Pos.-Nr.', key: 'posNumber', width: 12 },
+      { header: 'Kurztext', key: 'shortDesc', width: 30 },
+      { header: 'Langtext', key: 'longDesc', width: 50 },
+      { header: 'Menge', key: 'quantity', width: 10 },
+      { header: 'Einheit', key: 'unit', width: 10 },
+      { header: 'EP (€)', key: 'unitPrice', width: 12 },
+      { header: 'GP (€)', key: 'totalPrice', width: 15 },
+      { header: 'Gewerk', key: 'trade', width: 20 }
+    ];
+
+    // Header-Styling
+    worksheet.getRow(1).font = { bold: true, size: 12 };
+    worksheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'E5E7EB' }
+    };
+    worksheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+    worksheet.getRow(1).height = 25;
+
+    // Projektinfo einfügen
+    worksheet.insertRow(1, ['Leistungsverzeichnis']);
+    worksheet.mergeCells('A1:H1');
+    worksheet.getCell('A1').font = { bold: true, size: 16 };
+    worksheet.getCell('A1').alignment = { horizontal: 'center' };
+
+    worksheet.insertRow(2, [project.name]);
+    worksheet.mergeCells('A2:H2');
+    worksheet.getCell('A2').font = { size: 14 };
+    worksheet.getCell('A2').alignment = { horizontal: 'center' };
+
+    worksheet.insertRow(3, ['']);
+    worksheet.insertRow(4, [`Ort: ${project.location || 'N/A'}`]);
+    worksheet.insertRow(5, [`Zeitraum: ${project.timeframe || 'N/A'}`]);
+    worksheet.insertRow(6, [`Erstellt am: ${new Date().toLocaleDateString('de-DE')}`]);
+    worksheet.insertRow(7, ['']);
+
+    // Daten einfügen
+    let currentRow = 9; // Nach Header
+    const groupedPositions = this.groupByTrade(positions);
+    
+    for (const [trade, tradePositions] of Object.entries(groupedPositions)) {
+      // Gewerküberschrift
+      worksheet.insertRow(currentRow, [trade]);
+      worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
+      const tradeRow = worksheet.getRow(currentRow);
+      tradeRow.font = { bold: true, size: 12, color: { argb: '2563eb' } };
+      tradeRow.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'EFF6FF' }
+      };
+      currentRow++;
+
+      // Positionen
+      tradePositions.forEach(position => {
+        const row = worksheet.addRow({
+          posNumber: position.positionNumber,
+          shortDesc: position.shortDescription,
+          longDesc: position.longDescription,
+          quantity: position.quantity,
+          unit: position.unit,
+          unitPrice: includePrices ? position.unitPrice : null,
+          totalPrice: includePrices ? position.totalPrice : null,
+          trade: position.trade
+        });
+
+        // Zahlenformatierung
+        row.getCell('quantity').numFmt = '#,##0.00';
+        if (includePrices) {
+          row.getCell('unitPrice').numFmt = '#,##0.00 €';
+          row.getCell('totalPrice').numFmt = '#,##0.00 €';
+        }
+        
+        currentRow++;
+      });
+      
+      // Leerzeile nach Gewerk
+      worksheet.addRow([]);
+      currentRow++;
+    }
+
+    // Summenbereich
+    if (includePrices) {
+      const totalSum = positions.reduce((sum, pos) => sum + (pos.totalPrice || 0), 0);
+      
+      worksheet.addRow([]);
+      const sumRow = worksheet.addRow([
+        '', '', '', '', 'Summe netto:', '', totalSum
+      ]);
+      sumRow.font = { bold: true };
+      sumRow.getCell(7).numFmt = '#,##0.00 €';
+      
+      const vatRow = worksheet.addRow([
+        '', '', '', '', 'MwSt. 19%:', '', totalSum * 0.19
+      ]);
+      vatRow.getCell(7).numFmt = '#,##0.00 €';
+      
+      const totalRow = worksheet.addRow([
+        '', '', '', '', 'Summe brutto:', '', totalSum * 1.19
+      ]);
+      totalRow.font = { bold: true, size: 12 };
+      totalRow.getCell(7).numFmt = '#,##0.00 €';
+      totalRow.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'F3F4F6' }
+      };
+    }
+
+    // Rahmen für alle Zellen mit Daten
+    const lastRow = worksheet.lastRow?.number || 1;
+    for (let i = 8; i <= lastRow; i++) {
+      const row = worksheet.getRow(i);
+      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        if (colNumber <= 8) {
+          cell.border = {
+            top: { style: 'thin' },
+            left: { style: 'thin' },
+            bottom: { style: 'thin' },
+            right: { style: 'thin' }
+          };
+        }
+      });
+    }
+
+    // Zusätzliche Arbeitsblätter
+    this.addSummarySheet(workbook, positions);
+    this.addPriceAnalysisSheet(workbook, positions);
+
+    // Buffer generieren
+    const buffer = await workbook.xlsx.writeBuffer();
+    return buffer as Buffer;
+  }
+
+  private addSummarySheet(workbook: ExcelJS.Workbook, positions: LVPosition[]) {
+    const worksheet = workbook.addWorksheet('Zusammenfassung', {
+      properties: { tabColor: { argb: '10B981' } }
+    });
+
+    worksheet.columns = [
+      { header: 'Gewerk', key: 'trade', width: 30 },
+      { header: 'Anzahl Positionen', key: 'count', width: 20 },
+      { header: 'Summe (€)', key: 'sum', width: 20 }
+    ];
+
+    // Header-Styling
+    worksheet.getRow(1).font = { bold: true };
+    worksheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'E5E7EB' }
+    };
+
+    // Daten aggregieren
+    const summary = this.calculateSummary(positions);
+    
+    Object.entries(summary).forEach(([trade, data]) => {
+      const row = worksheet.addRow({
+        trade,
+        count: data.count,
+        sum: data.sum
+      });
+      row.getCell('sum').numFmt = '#,##0.00 €';
+    });
+
+    // Gesamtsumme
+    worksheet.addRow([]);
+    const totalRow = worksheet.addRow({
+      trade: 'GESAMT',
+      count: positions.length,
+      sum: positions.reduce((sum, pos) => sum + (pos.totalPrice || 0), 0)
+    });
+    totalRow.font = { bold: true };
+    totalRow.getCell('sum').numFmt = '#,##0.00 €';
+  }
+
+  private addPriceAnalysisSheet(workbook: ExcelJS.Workbook, positions: LVPosition[]) {
+    const worksheet = workbook.addWorksheet('Preisanalyse', {
+      properties: { tabColor: { argb: 'F59E0B' } }
+    });
+
+    worksheet.columns = [
+      { header: 'Kennzahl', key: 'metric', width: 30 },
+      { header: 'Wert', key: 'value', width: 25 }
+    ];
+
+    const metrics = [
+      { metric: 'Durchschnittlicher Einheitspreis', value: this.calculateAvgUnitPrice(positions) },
+      { metric: 'Höchster Einheitspreis', value: this.getMaxUnitPrice(positions) },
+      { metric: 'Niedrigster Einheitspreis', value: this.getMinUnitPrice(positions) },
+      { metric: 'Größte Position (Wert)', value: this.getLargestPosition(positions) },
+      { metric: 'Kleinste Position (Wert)', value: this.getSmallestPosition(positions) }
+    ];
+
+    metrics.forEach(metric => {
+      const row = worksheet.addRow(metric);
+      if (typeof metric.value === 'number') {
+        row.getCell('value').numFmt = '#,##0.00 €';
+      }
+    });
+  }
+
+  private groupByTrade(positions: LVPosition[]): Record<string, LVPosition[]> {
+    return positions.reduce((acc, pos) => {
+      const trade = pos.trade || 'Sonstige';
+      if (!acc[trade]) acc[trade] = [];
+      acc[trade].push(pos);
+      return acc;
+    }, {} as Record<string, LVPosition[]>);
+  }
+
+  private calculateSummary(positions: LVPosition[]) {
+    const grouped = this.groupByTrade(positions);
+    const summary: Record<string, { count: number; sum: number }> = {};
+    
+    for (const [trade, tradePositions] of Object.entries(grouped)) {
+      summary[trade] = {
+        count: tradePositions.length,
+        sum: tradePositions.reduce((sum, pos) => sum + (pos.totalPrice || 0), 0)
+      };
+    }
+    
+    return summary;
+  }
+
+  private calculateAvgUnitPrice(positions: LVPosition[]): number {
+    const prices = positions.map(p => p.unitPrice || 0).filter(p => p > 0);
+    return prices.reduce((sum, p) => sum + p, 0) / prices.length;
+  }
+
+  private getMaxUnitPrice(positions: LVPosition[]): number {
+    return Math.max(...positions.map(p => p.unitPrice || 0));
+  }
+
+  private getMinUnitPrice(positions: LVPosition[]): number {
+    const prices = positions.map(p => p.unitPrice || 0).filter(p => p > 0);
+    return Math.min(...prices);
+  }
+
+  private getLargestPosition(positions: LVPosition[]): string {
+    const largest = positions.reduce((max, pos) => 
+      (pos.totalPrice || 0) > (max.totalPrice || 0) ? pos : max
+    );
+    return `${largest.shortDescription} (${(largest.totalPrice || 0).toLocaleString('de-DE')} €)`;
+  }
+
+  private getSmallestPosition(positions: LVPosition[]): string {
+    const validPositions = positions.filter(p => (p.totalPrice || 0) > 0);
+    const smallest = validPositions.reduce((min, pos) => 
+      (pos.totalPrice || 0) < (min.totalPrice || 0) ? pos : min
+    );
+    return `${smallest.shortDescription} (${(smallest.totalPrice || 0).toLocaleString('de-DE')} €)`;
+  }
+}
+
+// backend/src/controllers/exportController.ts
+import { Request, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
+import { GAEBService } from '../services/gaebService';
+import { PDFService } from '../services/pdfService';
+import { ExcelService } from '../services/excelService';
+import { S3Service } from '../services/s3Service';
+
+export class ExportController {
+  private pdfService: PDFService;
+  private excelService: ExcelService;
+  private s3Service: S3Service;
+
+  constructor(
+    private prisma: PrismaClient,
+    private gaebService: GAEBService
+  ) {
+    this.pdfService = new PDFService();
+    this.excelService = new ExcelService();
+    this.s3Service = new S3Service();
+  }
+
+  exportGAEB = async (req: Request, res: Response) => {
+    try {
+      const { projectId, format = 'x31' } = req.body;
+      
+      // Projekt und Positionen laden
+      const project = await this.prisma.project.findUnique({
+        where: { id: projectId },
+        include: { positions: true }
+      });
+
+      if (!project) {
+        return res.status(404).json({ error: 'Projekt nicht gefunden' });
+      }
+
+      // GAEB generieren
+      let gaebContent: string;
+      if (format === 'x31') {
+        gaebContent = await this.gaebService.generateX31(project, project.positions);
+      } else if (format === 'd86') {
+        gaebContent = await this.gaebService.generateD86(project, project.positions);
+      } else {
+        return res.status(400).json({ error: 'Ungültiges GAEB-Format' });
+      }
+
+      // Datei speichern und URL generieren
+      const filename = `${project.id}_${format}_${Date.now()}.xml`;
+      const buffer = Buffer.from(gaebContent, 'utf-8');
+      const url = await this.s3Service.uploadFile(buffer, filename, 'application/xml');
+
+      res.json({
+        success: true,
+        filename,
+        url,
+        size: buffer.length
+      });
+    } catch (error) {
+      console.error('GAEB Export Fehler:', error);
+      res.status(500).json({ error: 'Export fehlgeschlagen' });
+    }
+  };
+
+  exportPDF = async (req: Request, res: Response) => {
+    try {
+      const { projectId, options = {} } = req.body;
+      const userId = req.user.id;
+
+      // Projekt und Positionen laden
+      const project = await this.prisma.project.findUnique({
+        where: { id: projectId },
+        include: { 
+          positions: true,
+          user: true
+        }
+      });
+
+      if (!project || project.userId !== userId) {
+        return res.status(404).json({ error: 'Projekt nicht gefunden' });
+      }
+
+      // PDF-Optionen vorbereiten
+      const pdfOptions = {
+        includePrices: options.includePrices !== false,
+        includeLogos: options.includeLogos !== false,
+        detailedDescriptions: options.detailedDescriptions !== false,
+        companyInfo: {
+          name: project.user.companyName || 'Unternehmen',
+          email: project.user.email
+        }
+      };
+
+      // PDF generieren
+      const pdfBuffer = await this.pdfService.generateLVPDF(
+        project,
+        project.positions,
+        pdfOptions
+      );
+
+      // Datei speichern
+      const filename = `LV_${project.name.replace(/\s+/g, '_')}_${Date.now()}.pdf`;
+      const url = await this.s3Service.uploadFile(pdfBuffer, filename, 'application/pdf');
+
+      res.json({
+        success: true,
+        filename,
+        url,
+        size: pdfBuffer.length
+      });
+    } catch (error) {
+      console.error('PDF Export Fehler:', error);
+      res.status(500).json({ error: 'PDF-Export fehlgeschlagen' });
+    }
+  };
+
+  exportExcel = async (req: Request, res: Response) => {
+    try {
+      const { projectId, includePrices = true } = req.body;
+      const userId = req.user.id;
+
+      // Projekt und Positionen laden
+      const project = await this.prisma.project.findUnique({
+        where: { id: projectId },
+        include: { positions: true }
+      });
+
+      if (!project || project.userId !== userId) {
+        return res.status(404).json({ error: 'Projekt nicht gefunden' });
+      }
+
+      // Excel generieren
+      const excelBuffer = await this.excelService.generateLVExcel(
+        project,
+        project.positions,
+        includePrices
+      );
+
+      // Datei speichern
+      const filename = `LV_${project.name.replace(/\s+/g, '_')}_${Date.now()}.xlsx`;
+      const url = await this.s3Service.uploadFile(
+        excelBuffer, 
+        filename, 
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+
+      res.json({
+        success: true,
+        filename,
+        url,
+        size: excelBuffer.length
+      });
+    } catch (error) {
+      console.error('Excel Export Fehler:', error);
+      res.status(500).json({ error: 'Excel-Export fehlgeschlagen' });
+    }
+  };
+
+  downloadExport = async (req: Request, res: Response) => {
+    try {
+      const { filename } = req.params;
+      const userId = req.user.id;
+
+      // Sicherheitsprüfung: Gehört die Datei zum Benutzer?
+      const projectId = filename.split('_')[0];
+      const project = await this.prisma.project.findFirst({
+        where: {
+          id: projectId,
+          userId: userId
+        }
+      });
+
+      if (!project) {
+        return res.status(403).json({ error: 'Zugriff verweigert' });
+      }
+
+      // Datei von S3 streamen
+      const stream = await this.s3Service.getFileStream(filename);
+      
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      stream.pipe(res);
+    } catch (error) {
+      console.error('Download Fehler:', error);
+      res.status(500).json({ error: 'Download fehlgeschlagen' });
+    }
+  };
+}
