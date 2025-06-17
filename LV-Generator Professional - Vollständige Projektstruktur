@@ -1,0 +1,331 @@
+# LV-Generator Professional - Vollständige Projektstruktur
+
+## 📁 Projektstruktur
+
+```
+lv-generator-pro/
+│
+├── 📁 frontend/                    # React TypeScript Frontend
+│   ├── 📁 src/
+│   │   ├── 📁 components/         # UI-Komponenten
+│   │   │   ├── Layout.tsx
+│   │   │   ├── ProjectList.tsx
+│   │   │   ├── TenderAnalyzer.tsx
+│   │   │   ├── LVEditor.tsx
+│   │   │   ├── PriceCalculator.tsx
+│   │   │   └── ExportManager.tsx
+│   │   ├── 📁 hooks/              # Custom React Hooks
+│   │   │   ├── useAPI.ts
+│   │   │   ├── useAuth.ts
+│   │   │   └── useWebSocket.ts
+│   │   ├── 📁 services/           # API-Services
+│   │   │   ├── api.ts
+│   │   │   ├── auth.ts
+│   │   │   └── export.ts
+│   │   ├── 📁 types/              # TypeScript Definitionen
+│   │   ├── 📁 utils/              # Hilfsfunktionen
+│   │   └── App.tsx
+│   ├── package.json
+│   └── tsconfig.json
+│
+├── 📁 backend/                     # Node.js Express Backend
+│   ├── 📁 src/
+│   │   ├── 📁 controllers/        # Request Handler
+│   │   │   ├── projectController.ts
+│   │   │   ├── analysisController.ts
+│   │   │   ├── priceController.ts
+│   │   │   └── exportController.ts
+│   │   ├── 📁 services/           # Business Logic
+│   │   │   ├── aiService.ts      # KI-Integration
+│   │   │   ├── scraperService.ts # Web-Scraping
+│   │   │   ├── priceService.ts   # Preiskalkulation
+│   │   │   └── gaebService.ts    # GAEB-Verarbeitung
+│   │   ├── 📁 models/             # Datenmodelle
+│   │   ├── 📁 routes/             # API-Routen
+│   │   ├── 📁 middleware/         # Express Middleware
+│   │   └── server.ts
+│   ├── package.json
+│   └── tsconfig.json
+│
+├── 📁 database/                    # Datenbank-Setup
+│   ├── 📁 migrations/             # DB-Migrationen
+│   ├── 📁 seeds/                  # Testdaten
+│   └── schema.sql                 # Datenbankschema
+│
+├── 📁 scraper/                     # Web-Scraping Module
+│   ├── 📁 parsers/                # Portal-spezifische Parser
+│   │   ├── evergabe.ts
+│   │   ├── ted.ts
+│   │   └── vergabe24.ts
+│   └── index.ts
+│
+├── 📁 ai-models/                   # KI-Konfiguration
+│   ├── 📁 prompts/                # Optimierte Prompts
+│   ├── 📁 fine-tuning/            # Fine-Tuning Daten
+│   └── config.ts
+│
+├── 📁 docker/                      # Container-Setup
+│   ├── Dockerfile.frontend
+│   ├── Dockerfile.backend
+│   └── docker-compose.yml
+│
+├── 📁 tests/                       # Automatisierte Tests
+│   ├── 📁 unit/
+│   ├── 📁 integration/
+│   └── 📁 e2e/
+│
+├── 📁 docs/                        # Dokumentation
+│   ├── API.md
+│   ├── SETUP.md
+│   └── USER_GUIDE.md
+│
+├── .env.example                    # Umgebungsvariablen-Vorlage
+├── .gitignore
+├── README.md
+└── package.json                    # Root package.json
+
+```
+
+## 🛠️ Technologie-Stack
+
+### Frontend
+- **Framework**: React 18 mit TypeScript
+- **UI-Library**: Tailwind CSS + Headless UI
+- **State Management**: Zustand
+- **API-Client**: Axios mit React Query
+- **Charts**: Recharts
+- **PDF-Generation**: jsPDF
+- **Excel**: SheetJS
+
+### Backend
+- **Runtime**: Node.js 20 LTS
+- **Framework**: Express.js mit TypeScript
+- **ORM**: Prisma
+- **Authentifizierung**: JWT + Passport.js
+- **API-Dokumentation**: Swagger/OpenAPI
+- **Queue**: Bull mit Redis
+- **WebSockets**: Socket.io
+
+### Datenbank & Storage
+- **Hauptdatenbank**: PostgreSQL 15
+- **Cache**: Redis
+- **Dateispeicher**: MinIO (S3-kompatibel)
+- **Suchindex**: Elasticsearch (optional)
+
+### KI & External Services
+- **LLM**: OpenAI GPT-4 / Anthropic Claude
+- **OCR**: Tesseract.js
+- **Web Scraping**: Puppeteer + Cheerio
+- **Email**: SendGrid
+- **Monitoring**: Sentry
+
+### DevOps
+- **Container**: Docker + Docker Compose
+- **CI/CD**: GitHub Actions
+- **Hosting**: Railway/Render (Backend), Vercel (Frontend)
+- **Monitoring**: Grafana + Prometheus
+
+## 🚀 Setup-Anleitung
+
+### 1. Repository klonen und Abhängigkeiten installieren
+
+```bash
+# Repository klonen
+git clone https://github.com/IhrName/lv-generator-pro.git
+cd lv-generator-pro
+
+# Root-Abhängigkeiten installieren
+npm install
+
+# Frontend-Abhängigkeiten
+cd frontend && npm install
+
+# Backend-Abhängigkeiten
+cd ../backend && npm install
+```
+
+### 2. Umgebungsvariablen konfigurieren
+
+```bash
+# .env Datei erstellen
+cp .env.example .env
+
+# Folgende Variablen ausfüllen:
+DATABASE_URL=postgresql://user:password@localhost:5432/lv_generator
+REDIS_URL=redis://localhost:6379
+OPENAI_API_KEY=sk-...
+JWT_SECRET=your-secret-key
+FRONTEND_URL=http://localhost:3000
+BACKEND_URL=http://localhost:3001
+```
+
+### 3. Datenbank einrichten
+
+```bash
+# PostgreSQL starten (Docker)
+docker-compose up -d postgres redis
+
+# Migrationen ausführen
+cd backend
+npx prisma migrate dev
+
+# Seed-Daten laden
+npx prisma db seed
+```
+
+### 4. Entwicklungsserver starten
+
+```bash
+# Terminal 1: Backend
+cd backend
+npm run dev
+
+# Terminal 2: Frontend
+cd frontend
+npm run dev
+
+# Terminal 3: Worker (für Background-Jobs)
+cd backend
+npm run worker
+```
+
+## 📊 Datenbankschema
+
+```sql
+-- Haupttabellen
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    company_name VARCHAR(255),
+    role VARCHAR(50) DEFAULT 'user',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE projects (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id),
+    name VARCHAR(255) NOT NULL,
+    tender_url TEXT,
+    tender_number VARCHAR(100),
+    location VARCHAR(255),
+    timeframe VARCHAR(255),
+    status VARCHAR(50) DEFAULT 'draft',
+    metadata JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE lv_positions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID REFERENCES projects(id),
+    position_number VARCHAR(50),
+    short_description VARCHAR(255),
+    long_description TEXT,
+    quantity DECIMAL(10,2),
+    unit VARCHAR(50),
+    unit_price DECIMAL(10,2),
+    total_price DECIMAL(12,2),
+    trade VARCHAR(100),
+    confidence_score DECIMAL(3,2),
+    metadata JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE price_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    position_type VARCHAR(255),
+    description TEXT,
+    region VARCHAR(100),
+    price DECIMAL(10,2),
+    currency VARCHAR(3) DEFAULT 'EUR',
+    source VARCHAR(100),
+    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indizes für Performance
+CREATE INDEX idx_projects_user_id ON projects(user_id);
+CREATE INDEX idx_lv_positions_project_id ON lv_positions(project_id);
+CREATE INDEX idx_price_history_region ON price_history(region);
+CREATE INDEX idx_price_history_position_type ON price_history(position_type);
+```
+
+## 🔧 Konfigurationsdateien
+
+### docker-compose.yml
+```yaml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: lv_generator
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+volumes:
+  postgres_data:
+  minio_data:
+```
+
+### package.json (Root)
+```json
+{
+  "name": "lv-generator-pro",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "cd backend && npm run build",
+    "build:frontend": "cd frontend && npm run build",
+    "test": "npm run test:backend && npm run test:frontend",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  }
+}
+```
+
+## 🎯 Nächste Schritte
+
+1. **Basis-Setup durchführen** (30 Minuten)
+2. **Datenbank einrichten** (15 Minuten)
+3. **Erste API-Endpoints implementieren** (2-3 Stunden)
+4. **Frontend-Grundgerüst erstellen** (2-3 Stunden)
+5. **KI-Integration testen** (1-2 Stunden)
+6. **Web-Scraping implementieren** (1 Tag)
+7. **Preiskalkulation entwickeln** (2-3 Tage)
+8. **Export-Funktionen** (2 Tage)
+9. **Testing & Debugging** (fortlaufend)
+10. **Deployment vorbereiten** (1 Tag)
