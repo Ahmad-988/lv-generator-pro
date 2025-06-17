@@ -1,0 +1,759 @@
+// ===== BACKEND MIDDLEWARE =====
+
+// backend/src/middleware/auth.ts
+import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+interface JWTPayload {
+  userId: string;
+  email: string;
+  role: string;
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: JWTPayload;
+    }
+  }
+}
+
+export const authMiddleware = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Keine Authentifizierung' });
+    }
+
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JWTPayload;
+
+    // Benutzer validieren
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId }
+    });
+
+    if (!user) {
+      return res.status(401).json({ error: 'Benutzer nicht gefunden' });
+    }
+
+    req.user = decoded;
+    next();
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError) {
+      return res.status(401).json({ error: 'Token abgelaufen' });
+    }
+    return res.status(401).json({ error: 'Ungültiger Token' });
+  }
+};
+
+export const roleMiddleware = (requiredRole: string) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.user || req.user.role !== requiredRole) {
+      return res.status(403).json({ error: 'Keine Berechtigung' });
+    }
+    next();
+  };
+};
+
+// backend/src/middleware/errorHandler.ts
+import { Request, Response, NextFunction } from 'express';
+import { logger } from '../utils/logger';
+
+interface CustomError extends Error {
+  statusCode?: number;
+  code?: string;
+  validationErrors?: any;
+}
+
+export const errorHandler = (
+  err: CustomError,
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  logger.error({
+    error: err.message,
+    stack: err.stack,
+    url: req.url,
+    method: req.method,
+    body: req.body,
+    user: req.user?.email
+  });
+
+  // Prisma-Fehler behandeln
+  if (err.code === 'P2002') {
+    return res.status(409).json({
+      error: 'Eintrag existiert bereits',
+      field: err.meta?.target
+    });
+  }
+
+  if (err.code === 'P2025') {
+    return res.status(404).json({
+      error: 'Eintrag nicht gefunden'
+    });
+  }
+
+  // Validierungsfehler
+  if (err.name === 'ValidationError') {
+    return res.status(400).json({
+      error: 'Validierungsfehler',
+      details: err.validationErrors
+    });
+  }
+
+  // Standard-Fehler
+  const statusCode = err.statusCode || 500;
+  const message = err.message || 'Interner Serverfehler';
+
+  res.status(statusCode).json({
+    error: message,
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+};
+
+// backend/src/middleware/rateLimiter.ts
+import rateLimit from 'express-rate-limit';
+import RedisStore from 'rate-limit-redis';
+import { createClient } from 'redis';
+
+const redisClient = createClient({
+  url: process.env.REDIS_URL
+});
+
+redisClient.connect().catch(console.error);
+
+// Allgemeines Rate Limit
+export const rateLimiter = rateLimit({
+  store: new RedisStore({
+    client: redisClient,
+    prefix: 'rl:general:'
+  }),
+  windowMs: 15 * 60 * 1000, // 15 Minuten
+  max: 100, // 100 Requests pro Window
+  message: 'Zu viele Anfragen, bitte später erneut versuchen',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Strengeres Limit für Auth-Endpoints
+export const authRateLimiter = rateLimit({
+  store: new RedisStore({
+    client: redisClient,
+    prefix: 'rl:auth:'
+  }),
+  windowMs: 15 * 60 * 1000,
+  max: 5, // Nur 5 Login-Versuche
+  skipSuccessfulRequests: true,
+  message: 'Zu viele Login-Versuche'
+});
+
+// API-Key basiertes Rate Limiting für KI-Anfragen
+export const aiRateLimiter = rateLimit({
+  store: new RedisStore({
+    client: redisClient,
+    prefix: 'rl:ai:'
+  }),
+  windowMs: 60 * 1000, // 1 Minute
+  max: 10, // 10 KI-Anfragen pro Minute
+  keyGenerator: (req) => req.user?.id || req.ip,
+  message: 'KI-Anfrage-Limit erreicht. Bitte warten Sie eine Minute.'
+});
+
+// backend/src/middleware/validation.ts
+import { celebrate, Joi, Segments } from 'celebrate';
+
+export const validateProject = celebrate({
+  [Segments.BODY]: Joi.object({
+    name: Joi.string().min(3).max(255).required(),
+    tenderUrl: Joi.string().uri().optional(),
+    tenderText: Joi.string().max(50000).optional(),
+    location: Joi.string().max(255).optional(),
+    timeframe: Joi.string().max(255).optional()
+  })
+});
+
+export const validateAnalysis = celebrate({
+  [Segments.BODY]: Joi.object({
+    projectId: Joi.string().uuid().required(),
+    url: Joi.string().uri().optional(),
+    text: Joi.string().max(100000).optional()
+  }).or('url', 'text')
+});
+
+export const validatePriceCalculation = celebrate({
+  [Segments.BODY]: Joi.object({
+    positions: Joi.array().items(
+      Joi.object({
+        id: Joi.string().uuid().required(),
+        quantity: Joi.number().positive().required(),
+        unit: Joi.string().required()
+      })
+    ).required(),
+    region: Joi.string().required(),
+    strategy: Joi.string().valid('günstig', 'marktüblich', 'premium').required()
+  })
+});
+
+// backend/src/middleware/fileUpload.ts
+import multer from 'multer';
+import { Request } from 'express';
+
+const storage = multer.memoryStorage();
+
+const fileFilter = (req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  const allowedMimes = [
+    'application/pdf',
+    'application/xml',
+    'text/xml',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'text/plain'
+  ];
+
+  if (allowedMimes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Ungültiger Dateityp'));
+  }
+};
+
+export const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB
+  }
+});
+
+// ===== FRONTEND API SERVICES =====
+
+// frontend/src/services/api.ts
+import axios, { AxiosInstance, AxiosError, AxiosRequestConfig } from 'axios';
+import { toast } from 'react-hot-toast';
+
+class ApiService {
+  private api: AxiosInstance;
+  private refreshPromise: Promise<string> | null = null;
+
+  constructor() {
+    this.api = axios.create({
+      baseURL: process.env.REACT_APP_API_URL || 'http://localhost:3001',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    this.setupInterceptors();
+  }
+
+  private setupInterceptors() {
+    // Request Interceptor
+    this.api.interceptors.request.use(
+      (config) => {
+        const token = localStorage.getItem('accessToken');
+        if (token) {
+          config.headers.Authorization = `Bearer ${token}`;
+        }
+        return config;
+      },
+      (error) => Promise.reject(error)
+    );
+
+    // Response Interceptor
+    this.api.interceptors.response.use(
+      (response) => response,
+      async (error: AxiosError) => {
+        const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean };
+
+        if (error.response?.status === 401 && !originalRequest._retry) {
+          originalRequest._retry = true;
+
+          try {
+            const newToken = await this.refreshToken();
+            originalRequest.headers!.Authorization = `Bearer ${newToken}`;
+            return this.api(originalRequest);
+          } catch (refreshError) {
+            this.logout();
+            window.location.href = '/login';
+            return Promise.reject(refreshError);
+          }
+        }
+
+        this.handleError(error);
+        return Promise.reject(error);
+      }
+    );
+  }
+
+  private async refreshToken(): Promise<string> {
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.refreshPromise = new Promise(async (resolve, reject) => {
+      try {
+        const refreshToken = localStorage.getItem('refreshToken');
+        const response = await this.api.post('/auth/refresh', { refreshToken });
+        const { accessToken } = response.data;
+        
+        localStorage.setItem('accessToken', accessToken);
+        this.refreshPromise = null;
+        resolve(accessToken);
+      } catch (error) {
+        this.refreshPromise = null;
+        reject(error);
+      }
+    });
+
+    return this.refreshPromise;
+  }
+
+  private handleError(error: AxiosError<any>) {
+    if (error.response) {
+      const message = error.response.data?.error || 'Ein Fehler ist aufgetreten';
+      toast.error(message);
+    } else if (error.request) {
+      toast.error('Keine Verbindung zum Server');
+    } else {
+      toast.error('Ein unerwarteter Fehler ist aufgetreten');
+    }
+  }
+
+  private logout() {
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
+  }
+
+  // Public methods
+  get<T>(url: string, config?: AxiosRequestConfig) {
+    return this.api.get<T>(url, config);
+  }
+
+  post<T>(url: string, data?: any, config?: AxiosRequestConfig) {
+    return this.api.post<T>(url, data, config);
+  }
+
+  put<T>(url: string, data?: any, config?: AxiosRequestConfig) {
+    return this.api.put<T>(url, data, config);
+  }
+
+  delete<T>(url: string, config?: AxiosRequestConfig) {
+    return this.api.delete<T>(url, config);
+  }
+
+  upload<T>(url: string, file: File, onProgress?: (progress: number) => void) {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    return this.api.post<T>(url, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      },
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) {
+          const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          onProgress(progress);
+        }
+      }
+    });
+  }
+}
+
+export const api = new ApiService();
+
+// frontend/src/services/projectService.ts
+import { api } from './api';
+import { Project, LVPosition } from '../types';
+
+export class ProjectService {
+  static async getProjects(): Promise<Project[]> {
+    const response = await api.get<{ projects: Project[] }>('/api/projects');
+    return response.data.projects;
+  }
+
+  static async getProject(id: string): Promise<Project> {
+    const response = await api.get<Project>(`/api/projects/${id}`);
+    return response.data;
+  }
+
+  static async createProject(data: Partial<Project>): Promise<Project> {
+    const response = await api.post<Project>('/api/projects', data);
+    return response.data;
+  }
+
+  static async updateProject(id: string, data: Partial<Project>): Promise<Project> {
+    const response = await api.put<Project>(`/api/projects/${id}`, data);
+    return response.data;
+  }
+
+  static async deleteProject(id: string): Promise<void> {
+    await api.delete(`/api/projects/${id}`);
+  }
+
+  static async analyzeProject(projectId: string, data: { url?: string; text?: string }) {
+    const response = await api.post<{ jobId: string }>('/api/analyze/tender', {
+      projectId,
+      ...data
+    });
+    return response.data;
+  }
+
+  static async getAnalysisStatus(jobId: string) {
+    const response = await api.get(`/api/analyze/status/${jobId}`);
+    return response.data;
+  }
+
+  static async calculatePrices(data: {
+    positions: LVPosition[];
+    region: string;
+    strategy: string;
+  }) {
+    const response = await api.post<{ positions: LVPosition[] }>('/api/prices/calculate', data);
+    return response.data.positions;
+  }
+
+  static async exportProject(projectId: string, format: 'pdf' | 'gaeb' | 'excel', options?: any) {
+    const endpoint = `/api/export/${format}`;
+    const response = await api.post<{ url: string; filename: string }>(endpoint, {
+      projectId,
+      ...options
+    });
+    return response.data;
+  }
+}
+
+// frontend/src/services/authService.ts
+import { api } from './api';
+
+interface LoginData {
+  email: string;
+  password: string;
+}
+
+interface RegisterData extends LoginData {
+  companyName?: string;
+}
+
+interface AuthResponse {
+  accessToken: string;
+  refreshToken: string;
+  user: {
+    id: string;
+    email: string;
+    companyName: string;
+    role: string;
+  };
+}
+
+export class AuthService {
+  static async login(data: LoginData): Promise<AuthResponse> {
+    const response = await api.post<AuthResponse>('/auth/login', data);
+    const { accessToken, refreshToken, user } = response.data;
+    
+    localStorage.setItem('accessToken', accessToken);
+    localStorage.setItem('refreshToken', refreshToken);
+    localStorage.setItem('user', JSON.stringify(user));
+    
+    return response.data;
+  }
+
+  static async register(data: RegisterData): Promise<AuthResponse> {
+    const response = await api.post<AuthResponse>('/auth/register', data);
+    const { accessToken, refreshToken, user } = response.data;
+    
+    localStorage.setItem('accessToken', accessToken);
+    localStorage.setItem('refreshToken', refreshToken);
+    localStorage.setItem('user', JSON.stringify(user));
+    
+    return response.data;
+  }
+
+  static async logout(): Promise<void> {
+    try {
+      await api.post('/auth/logout');
+    } finally {
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('refreshToken');
+      localStorage.removeItem('user');
+      window.location.href = '/login';
+    }
+  }
+
+  static getCurrentUser() {
+    const userStr = localStorage.getItem('user');
+    return userStr ? JSON.parse(userStr) : null;
+  }
+
+  static isAuthenticated(): boolean {
+    return !!localStorage.getItem('accessToken');
+  }
+
+  static async updateProfile(data: { email?: string; companyName?: string; password?: string }) {
+    const response = await api.put('/auth/profile', data);
+    const user = response.data;
+    localStorage.setItem('user', JSON.stringify(user));
+    return user;
+  }
+}
+
+// frontend/src/hooks/useWebSocket.ts
+import { useEffect, useRef, useState } from 'react';
+import io, { Socket } from 'socket.io-client';
+
+interface UseWebSocketOptions {
+  projectId?: string;
+  onProgress?: (data: any) => void;
+  onComplete?: (data: any) => void;
+  onError?: (error: any) => void;
+}
+
+export function useWebSocket(options: UseWebSocketOptions) {
+  const [isConnected, setIsConnected] = useState(false);
+  const socketRef = useRef<Socket | null>(null);
+
+  useEffect(() => {
+    const socket = io(process.env.REACT_APP_WS_URL || 'http://localhost:3001', {
+      auth: {
+        token: localStorage.getItem('accessToken')
+      }
+    });
+
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      setIsConnected(true);
+      if (options.projectId) {
+        socket.emit('join-project', options.projectId);
+      }
+    });
+
+    socket.on('disconnect', () => {
+      setIsConnected(false);
+    });
+
+    socket.on('analysis-progress', options.onProgress || (() => {}));
+    socket.on('analysis-complete', options.onComplete || (() => {}));
+    socket.on('analysis-error', options.onError || (() => {}));
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [options.projectId]);
+
+  const emit = (event: string, data: any) => {
+    if (socketRef.current && isConnected) {
+      socketRef.current.emit(event, data);
+    }
+  };
+
+  return { isConnected, emit };
+}
+
+// frontend/src/hooks/useApi.ts
+import { useState, useEffect, useCallback } from 'react';
+import { AxiosError } from 'axios';
+
+interface UseApiOptions {
+  immediate?: boolean;
+  onSuccess?: (data: any) => void;
+  onError?: (error: any) => void;
+}
+
+export function useApi<T>(
+  apiFunc: (...args: any[]) => Promise<T>,
+  options: UseApiOptions = {}
+) {
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const execute = useCallback(async (...args: any[]) => {
+    try {
+      setLoading(true);
+      setError(null);
+      const result = await apiFunc(...args);
+      setData(result);
+      options.onSuccess?.(result);
+      return result;
+    } catch (err) {
+      const error = err as Error;
+      setError(error);
+      options.onError?.(error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  }, [apiFunc]);
+
+  useEffect(() => {
+    if (options.immediate) {
+      execute();
+    }
+  }, []);
+
+  return { data, loading, error, execute };
+}
+
+// frontend/src/stores/projectStore.ts
+import { create } from 'zustand';
+import { Project, LVPosition } from '../types';
+import { ProjectService } from '../services/projectService';
+
+interface ProjectStore {
+  projects: Project[];
+  currentProject: Project | null;
+  positions: LVPosition[];
+  loading: boolean;
+  error: string | null;
+  
+  fetchProjects: () => Promise<void>;
+  fetchProject: (id: string) => Promise<void>;
+  createProject: (data: Partial<Project>) => Promise<Project>;
+  updateProject: (id: string, data: Partial<Project>) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
+  updatePosition: (id: string, data: Partial<LVPosition>) => void;
+  setPositions: (positions: LVPosition[]) => void;
+}
+
+export const useProjectStore = create<ProjectStore>((set, get) => ({
+  projects: [],
+  currentProject: null,
+  positions: [],
+  loading: false,
+  error: null,
+
+  fetchProjects: async () => {
+    set({ loading: true, error: null });
+    try {
+      const projects = await ProjectService.getProjects();
+      set({ projects, loading: false });
+    } catch (error) {
+      set({ error: (error as Error).message, loading: false });
+    }
+  },
+
+  fetchProject: async (id: string) => {
+    set({ loading: true, error: null });
+    try {
+      const project = await ProjectService.getProject(id);
+      set({ currentProject: project, loading: false });
+    } catch (error) {
+      set({ error: (error as Error).message, loading: false });
+    }
+  },
+
+  createProject: async (data: Partial<Project>) => {
+    set({ loading: true, error: null });
+    try {
+      const project = await ProjectService.createProject(data);
+      set((state) => ({
+        projects: [...state.projects, project],
+        currentProject: project,
+        loading: false
+      }));
+      return project;
+    } catch (error) {
+      set({ error: (error as Error).message, loading: false });
+      throw error;
+    }
+  },
+
+  updateProject: async (id: string, data: Partial<Project>) => {
+    set({ loading: true, error: null });
+    try {
+      const updated = await ProjectService.updateProject(id, data);
+      set((state) => ({
+        projects: state.projects.map(p => p.id === id ? updated : p),
+        currentProject: state.currentProject?.id === id ? updated : state.currentProject,
+        loading: false
+      }));
+    } catch (error) {
+      set({ error: (error as Error).message, loading: false });
+      throw error;
+    }
+  },
+
+  deleteProject: async (id: string) => {
+    set({ loading: true, error: null });
+    try {
+      await ProjectService.deleteProject(id);
+      set((state) => ({
+        projects: state.projects.filter(p => p.id !== id),
+        currentProject: state.currentProject?.id === id ? null : state.currentProject,
+        loading: false
+      }));
+    } catch (error) {
+      set({ error: (error as Error).message, loading: false });
+      throw error;
+    }
+  },
+
+  updatePosition: (id: string, data: Partial<LVPosition>) => {
+    set((state) => ({
+      positions: state.positions.map(pos => {
+        if (pos.id === id) {
+          const updated = { ...pos, ...data };
+          if ('quantity' in data || 'unitPrice' in data) {
+            updated.totalPrice = updated.quantity * updated.unitPrice;
+          }
+          return updated;
+        }
+        return pos;
+      })
+    }));
+  },
+
+  setPositions: (positions: LVPosition[]) => {
+    set({ positions });
+  }
+}));
+
+// frontend/src/utils/validation.ts
+export const validateEmail = (email: string): boolean => {
+  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return re.test(email);
+};
+
+export const validatePassword = (password: string): { valid: boolean; errors: string[] } => {
+  const errors: string[] = [];
+  
+  if (password.length < 8) {
+    errors.push('Passwort muss mindestens 8 Zeichen lang sein');
+  }
+  if (!/[A-Z]/.test(password)) {
+    errors.push('Passwort muss mindestens einen Großbuchstaben enthalten');
+  }
+  if (!/[a-z]/.test(password)) {
+    errors.push('Passwort muss mindestens einen Kleinbuchstaben enthalten');
+  }
+  if (!/[0-9]/.test(password)) {
+    errors.push('Passwort muss mindestens eine Zahl enthalten');
+  }
+  
+  return { valid: errors.length === 0, errors };
+};
+
+export const validateUrl = (url: string): boolean => {
+  try {
+    new URL(url);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const validatePositionNumber = (posNumber: string): boolean => {
+  // Format: XX.XX.XXX
+  const re = /^\d{2}\.\d{2}\.\d{3}$/;
+  return re.test(posNumber);
+};
