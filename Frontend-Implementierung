@@ -1,0 +1,934 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { 
+  FileText, Calculator, Download, Edit2, Save, AlertCircle, 
+  CheckCircle, ArrowRight, Loader2, Upload, Search, Settings,
+  TrendingUp, Clock, Euro, BarChart3, FileSpreadsheet, FileDown,
+  Eye, X, Plus, Trash2, Copy, Filter
+} from 'lucide-react';
+
+// === TYPE DEFINITIONS ===
+interface User {
+  id: string;
+  email: string;
+  companyName: string;
+  role: string;
+}
+
+interface Project {
+  id: string;
+  name: string;
+  location: string;
+  timeframe: string;
+  status: 'draft' | 'analyzed' | 'calculated' | 'exported';
+  createdAt: string;
+  updatedAt: string;
+  totalPrice?: number;
+  positionsCount?: number;
+}
+
+interface LVPosition {
+  id: string;
+  positionNumber: string;
+  shortDescription: string;
+  longDescription: string;
+  quantity: number;
+  unit: string;
+  unitPrice: number;
+  totalPrice: number;
+  trade: string;
+  confidenceScore: number;
+}
+
+interface PriceStrategy {
+  name: string;
+  factor: number;
+  description: string;
+  color: string;
+}
+
+// === MAIN APP COMPONENT ===
+const App: React.FC = () => {
+  const [user, setUser] = useState<User | null>(null);
+  const [currentView, setCurrentView] = useState<'dashboard' | 'project' | 'settings'>('dashboard');
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Demo-Daten für Entwicklung
+  useEffect(() => {
+    // Simuliere eingeloggten Benutzer
+    setUser({
+      id: '1',
+      email: 'demo@example.com',
+      companyName: 'Musterbau GmbH',
+      role: 'admin'
+    });
+
+    // Lade Demo-Projekte
+    setProjects([
+      {
+        id: '1',
+        name: 'Bürosanierung Frankfurt',
+        location: 'Frankfurt am Main',
+        timeframe: '01.09.2025 - 30.11.2025',
+        status: 'calculated',
+        createdAt: '2025-06-15',
+        updatedAt: '2025-06-16',
+        totalPrice: 125400,
+        positionsCount: 24
+      },
+      {
+        id: '2',
+        name: 'Schulrenovierung Hamburg',
+        location: 'Hamburg',
+        timeframe: '15.07.2025 - 15.10.2025',
+        status: 'analyzed',
+        createdAt: '2025-06-14',
+        updatedAt: '2025-06-14',
+        positionsCount: 18
+      },
+      {
+        id: '3',
+        name: 'Krankenhausanbau München',
+        location: 'München',
+        timeframe: '01.08.2025 - 31.12.2025',
+        status: 'draft',
+        createdAt: '2025-06-13',
+        updatedAt: '2025-06-13'
+      }
+    ]);
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <Header user={user} currentView={currentView} setCurrentView={setCurrentView} />
+
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {currentView === 'dashboard' && (
+          <Dashboard 
+            projects={projects}
+            onSelectProject={(project) => {
+              setSelectedProject(project);
+              setCurrentView('project');
+            }}
+            onCreateProject={() => {
+              setSelectedProject(null);
+              setCurrentView('project');
+            }}
+          />
+        )}
+        
+        {currentView === 'project' && (
+          <ProjectView 
+            project={selectedProject}
+            onBack={() => setCurrentView('dashboard')}
+          />
+        )}
+        
+        {currentView === 'settings' && (
+          <SettingsView user={user} />
+        )}
+      </main>
+    </div>
+  );
+};
+
+// === HEADER COMPONENT ===
+const Header: React.FC<{
+  user: User | null;
+  currentView: string;
+  setCurrentView: (view: 'dashboard' | 'project' | 'settings') => void;
+}> = ({ user, currentView, setCurrentView }) => {
+  return (
+    <header className="bg-white shadow-sm border-b">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between h-16">
+          <div className="flex items-center">
+            <FileText className="h-8 w-8 text-blue-600 mr-3" />
+            <h1 className="text-xl font-semibold text-gray-900">LV-Generator Pro</h1>
+          </div>
+          
+          <nav className="flex items-center space-x-8">
+            <button
+              onClick={() => setCurrentView('dashboard')}
+              className={`text-sm font-medium ${
+                currentView === 'dashboard' ? 'text-blue-600' : 'text-gray-700 hover:text-gray-900'
+              }`}
+            >
+              Dashboard
+            </button>
+            <button
+              onClick={() => setCurrentView('settings')}
+              className={`text-sm font-medium ${
+                currentView === 'settings' ? 'text-blue-600' : 'text-gray-700 hover:text-gray-900'
+              }`}
+            >
+              Einstellungen
+            </button>
+            <div className="flex items-center space-x-2 text-sm text-gray-600">
+              <span>{user?.companyName}</span>
+              <span className="text-gray-400">|</span>
+              <span>{user?.email}</span>
+            </div>
+          </nav>
+        </div>
+      </div>
+    </header>
+  );
+};
+
+// === DASHBOARD COMPONENT ===
+const Dashboard: React.FC<{
+  projects: Project[];
+  onSelectProject: (project: Project) => void;
+  onCreateProject: () => void;
+}> = ({ projects, onSelectProject, onCreateProject }) => {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+
+  const filteredProjects = projects.filter(project => {
+    const matchesSearch = project.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         project.location.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesStatus = filterStatus === 'all' || project.status === filterStatus;
+    return matchesSearch && matchesStatus;
+  });
+
+  // Statistiken berechnen
+  const stats = {
+    total: projects.length,
+    inProgress: projects.filter(p => p.status === 'analyzed' || p.status === 'calculated').length,
+    completed: projects.filter(p => p.status === 'exported').length,
+    totalValue: projects.reduce((sum, p) => sum + (p.totalPrice || 0), 0)
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Statistik-Karten */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <StatCard
+          title="Projekte gesamt"
+          value={stats.total}
+          icon={<FileText className="h-8 w-8 text-blue-600" />}
+          trend="+12%"
+        />
+        <StatCard
+          title="In Bearbeitung"
+          value={stats.inProgress}
+          icon={<Clock className="h-8 w-8 text-yellow-600" />}
+        />
+        <StatCard
+          title="Abgeschlossen"
+          value={stats.completed}
+          icon={<CheckCircle className="h-8 w-8 text-green-600" />}
+          trend="+8%"
+        />
+        <StatCard
+          title="Gesamtvolumen"
+          value={`${stats.totalValue.toLocaleString('de-DE')} €`}
+          icon={<Euro className="h-8 w-8 text-purple-600" />}
+          trend="+23%"
+        />
+      </div>
+
+      {/* Aktionen und Filter */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-lg font-semibold">Ihre Projekte</h2>
+          <button
+            onClick={onCreateProject}
+            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Neues Projekt
+          </button>
+        </div>
+
+        <div className="flex items-center space-x-4 mb-6">
+          <div className="flex-1 relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Projekte durchsuchen..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            className="px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">Alle Status</option>
+            <option value="draft">Entwurf</option>
+            <option value="analyzed">Analysiert</option>
+            <option value="calculated">Kalkuliert</option>
+            <option value="exported">Exportiert</option>
+          </select>
+        </div>
+
+        {/* Projektliste */}
+        <div className="space-y-4">
+          {filteredProjects.map(project => (
+            <ProjectCard
+              key={project.id}
+              project={project}
+              onClick={() => onSelectProject(project)}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// === PROJECT VIEW COMPONENT ===
+const ProjectView: React.FC<{
+  project: Project | null;
+  onBack: () => void;
+}> = ({ project, onBack }) => {
+  const [activeTab, setActiveTab] = useState<'input' | 'positions' | 'calculation' | 'export'>('input');
+  const [tenderUrl, setTenderUrl] = useState('');
+  const [tenderText, setTenderText] = useState('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [positions, setPositions] = useState<LVPosition[]>([]);
+  const [selectedStrategy, setSelectedStrategy] = useState('marktüblich');
+
+  const strategies: PriceStrategy[] = [
+    { name: 'günstig', factor: 0.9, description: 'Wettbewerbsfähige Preise', color: 'green' },
+    { name: 'marktüblich', factor: 1.0, description: 'Durchschnittliche Marktpreise', color: 'blue' },
+    { name: 'premium', factor: 1.1, description: 'Qualitätsorientierte Preise', color: 'purple' }
+  ];
+
+  // Simuliere Analyse
+  const handleAnalyze = async () => {
+    setIsAnalyzing(true);
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Demo-Positionen
+    setPositions([
+      {
+        id: '1',
+        positionNumber: '01.01.010',
+        shortDescription: 'Gipskarton-Ständerwände',
+        longDescription: 'Liefern und Montieren von Gipskarton-Ständerwänden, Metallunterkonstruktion CW/UW 75mm',
+        quantity: 250,
+        unit: 'm²',
+        unitPrice: 42.50,
+        totalPrice: 10625,
+        trade: 'Trockenbau',
+        confidenceScore: 0.92
+      },
+      {
+        id: '2',
+        positionNumber: '02.01.010',
+        shortDescription: 'Wandanstrich',
+        longDescription: 'Grundierung und zweimaliger Anstrich mit Dispersionsfarbe',
+        quantity: 850,
+        unit: 'm²',
+        unitPrice: 12.80,
+        totalPrice: 10880,
+        trade: 'Malerarbeiten',
+        confidenceScore: 0.88
+      }
+    ]);
+    
+    setIsAnalyzing(false);
+    setActiveTab('positions');
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Zurück-Button und Titel */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-4">
+          <button
+            onClick={onBack}
+            className="p-2 hover:bg-gray-100 rounded-md transition-colors"
+          >
+            <ArrowRight className="h-5 w-5 rotate-180" />
+          </button>
+          <h1 className="text-2xl font-semibold">
+            {project ? project.name : 'Neues Projekt'}
+          </h1>
+        </div>
+        <div className="flex items-center space-x-2">
+          <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm">
+            {project?.status || 'Entwurf'}
+          </span>
+        </div>
+      </div>
+
+      {/* Tab-Navigation */}
+      <div className="border-b">
+        <nav className="flex space-x-8">
+          <TabButton
+            active={activeTab === 'input'}
+            onClick={() => setActiveTab('input')}
+            icon={<Upload className="h-4 w-4" />}
+            label="Eingabe"
+          />
+          <TabButton
+            active={activeTab === 'positions'}
+            onClick={() => setActiveTab('positions')}
+            icon={<FileText className="h-4 w-4" />}
+            label="LV-Positionen"
+            disabled={positions.length === 0}
+          />
+          <TabButton
+            active={activeTab === 'calculation'}
+            onClick={() => setActiveTab('calculation')}
+            icon={<Calculator className="h-4 w-4" />}
+            label="Kalkulation"
+            disabled={positions.length === 0}
+          />
+          <TabButton
+            active={activeTab === 'export'}
+            onClick={() => setActiveTab('export')}
+            icon={<Download className="h-4 w-4" />}
+            label="Export"
+            disabled={positions.length === 0}
+          />
+        </nav>
+      </div>
+
+      {/* Tab-Inhalte */}
+      <div className="bg-white rounded-lg shadow p-6">
+        {activeTab === 'input' && (
+          <InputTab
+            tenderUrl={tenderUrl}
+            setTenderUrl={setTenderUrl}
+            tenderText={tenderText}
+            setTenderText={setTenderText}
+            onAnalyze={handleAnalyze}
+            isAnalyzing={isAnalyzing}
+          />
+        )}
+        
+        {activeTab === 'positions' && (
+          <PositionsTab
+            positions={positions}
+            setPositions={setPositions}
+          />
+        )}
+        
+        {activeTab === 'calculation' && (
+          <CalculationTab
+            positions={positions}
+            selectedStrategy={selectedStrategy}
+            setSelectedStrategy={setSelectedStrategy}
+            strategies={strategies}
+          />
+        )}
+        
+        {activeTab === 'export' && (
+          <ExportTab
+            project={project}
+            positions={positions}
+          />
+        )}
+      </div>
+    </div>
+  );
+};
+
+// === HELPER COMPONENTS ===
+const StatCard: React.FC<{
+  title: string;
+  value: string | number;
+  icon: React.ReactNode;
+  trend?: string;
+}> = ({ title, value, icon, trend }) => (
+  <div className="bg-white rounded-lg shadow p-6">
+    <div className="flex items-center justify-between">
+      <div>
+        <p className="text-sm text-gray-600">{title}</p>
+        <p className="text-2xl font-semibold mt-2">{value}</p>
+        {trend && (
+          <div className="flex items-center mt-2">
+            <TrendingUp className="h-4 w-4 text-green-500 mr-1" />
+            <span className="text-sm text-green-600">{trend}</span>
+          </div>
+        )}
+      </div>
+      <div>{icon}</div>
+    </div>
+  </div>
+);
+
+const ProjectCard: React.FC<{
+  project: Project;
+  onClick: () => void;
+}> = ({ project, onClick }) => (
+  <div
+    onClick={onClick}
+    className="border rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer"
+  >
+    <div className="flex items-start justify-between">
+      <div className="flex-1">
+        <h3 className="font-medium text-lg">{project.name}</h3>
+        <div className="flex items-center space-x-4 mt-2 text-sm text-gray-600">
+          <span>{project.location}</span>
+          <span>•</span>
+          <span>{project.timeframe}</span>
+        </div>
+        {project.positionsCount && (
+          <div className="flex items-center space-x-4 mt-2 text-sm">
+            <span>{project.positionsCount} Positionen</span>
+            {project.totalPrice && (
+              <>
+                <span>•</span>
+                <span className="font-medium">
+                  {project.totalPrice.toLocaleString('de-DE')} €
+                </span>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      <StatusBadge status={project.status} />
+    </div>
+  </div>
+);
+
+const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
+  const colors = {
+    draft: 'bg-gray-100 text-gray-700',
+    analyzed: 'bg-blue-100 text-blue-700',
+    calculated: 'bg-yellow-100 text-yellow-700',
+    exported: 'bg-green-100 text-green-700'
+  };
+  
+  const labels = {
+    draft: 'Entwurf',
+    analyzed: 'Analysiert',
+    calculated: 'Kalkuliert',
+    exported: 'Exportiert'
+  };
+  
+  return (
+    <span className={`px-3 py-1 rounded-full text-sm ${colors[status] || colors.draft}`}>
+      {labels[status] || status}
+    </span>
+  );
+};
+
+const TabButton: React.FC<{
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+  disabled?: boolean;
+}> = ({ active, onClick, icon, label, disabled }) => (
+  <button
+    onClick={onClick}
+    disabled={disabled}
+    className={`flex items-center space-x-2 px-4 py-2 border-b-2 transition-colors ${
+      active
+        ? 'border-blue-500 text-blue-600'
+        : disabled
+        ? 'border-transparent text-gray-400 cursor-not-allowed'
+        : 'border-transparent text-gray-600 hover:text-gray-900'
+    }`}
+  >
+    {icon}
+    <span>{label}</span>
+  </button>
+);
+
+// === TAB COMPONENTS ===
+const InputTab: React.FC<{
+  tenderUrl: string;
+  setTenderUrl: (url: string) => void;
+  tenderText: string;
+  setTenderText: (text: string) => void;
+  onAnalyze: () => void;
+  isAnalyzing: boolean;
+}> = ({ tenderUrl, setTenderUrl, tenderText, setTenderText, onAnalyze, isAnalyzing }) => (
+  <div className="space-y-6">
+    <div>
+      <h3 className="text-lg font-medium mb-4">Ausschreibung eingeben</h3>
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            URL der Ausschreibung
+          </label>
+          <input
+            type="url"
+            value={tenderUrl}
+            onChange={(e) => setTenderUrl(e.target.value)}
+            placeholder="https://www.evergabe.de/..."
+            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        
+        <div className="flex items-center space-x-4">
+          <div className="flex-1 h-px bg-gray-300" />
+          <span className="text-gray-500">oder</span>
+          <div className="flex-1 h-px bg-gray-300" />
+        </div>
+        
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Ausschreibungstext einfügen
+          </label>
+          <textarea
+            value={tenderText}
+            onChange={(e) => setTenderText(e.target.value)}
+            placeholder="Fügen Sie hier den Ausschreibungstext ein..."
+            rows={10}
+            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        
+        <button
+          onClick={onAnalyze}
+          disabled={(!tenderUrl && !tenderText) || isAnalyzing}
+          className="flex items-center justify-center w-full md:w-auto px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 transition-colors"
+        >
+          {isAnalyzing ? (
+            <>
+              <Loader2 className="animate-spin h-5 w-5 mr-2" />
+              Analysiere...
+            </>
+          ) : (
+            <>
+              <Calculator className="h-5 w-5 mr-2" />
+              Ausschreibung analysieren
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
+const PositionsTab: React.FC<{
+  positions: LVPosition[];
+  setPositions: (positions: LVPosition[]) => void;
+}> = ({ positions, setPositions }) => {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  
+  const updatePosition = (id: string, field: keyof LVPosition, value: any) => {
+    setPositions(positions.map(pos => {
+      if (pos.id === id) {
+        const updated = { ...pos, [field]: value };
+        if (field === 'quantity' || field === 'unitPrice') {
+          updated.totalPrice = updated.quantity * updated.unitPrice;
+        }
+        return updated;
+      }
+      return pos;
+    }));
+  };
+  
+  const total = positions.reduce((sum, pos) => sum + pos.totalPrice, 0);
+  
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <h3 className="text-lg font-medium">Leistungsverzeichnis</h3>
+        <button className="flex items-center px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50">
+          <Plus className="h-4 w-4 mr-2" />
+          Position hinzufügen
+        </button>
+      </div>
+      
+      <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Pos-Nr.</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Beschreibung</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Menge</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Einheit</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">EP (€)</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">GP (€)</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Aktion</th>
+            </tr>
+          </thead>
+          <tbody className="bg-white divide-y divide-gray-200">
+            {positions.map(position => (
+              <tr key={position.id} className="hover:bg-gray-50">
+                <td className="px-4 py-4 text-sm">{position.positionNumber}</td>
+                <td className="px-4 py-4 text-sm">
+                  <div>
+                    <p className="font-medium">{position.shortDescription}</p>
+                    <p className="text-gray-500 text-xs mt-1">{position.longDescription}</p>
+                  </div>
+                </td>
+                <td className="px-4 py-4 text-sm">
+                  {editingId === position.id ? (
+                    <input
+                      type="number"
+                      value={position.quantity}
+                      onChange={(e) => updatePosition(position.id, 'quantity', parseFloat(e.target.value))}
+                      className="w-20 px-2 py-1 border rounded"
+                    />
+                  ) : (
+                    position.quantity.toLocaleString('de-DE')
+                  )}
+                </td>
+                <td className="px-4 py-4 text-sm">{position.unit}</td>
+                <td className="px-4 py-4 text-sm">
+                  {editingId === position.id ? (
+                    <input
+                      type="number"
+                      value={position.unitPrice}
+                      onChange={(e) => updatePosition(position.id, 'unitPrice', parseFloat(e.target.value))}
+                      className="w-20 px-2 py-1 border rounded"
+                      step="0.01"
+                    />
+                  ) : (
+                    position.unitPrice.toLocaleString('de-DE', { minimumFractionDigits: 2 })
+                  )}
+                </td>
+                <td className="px-4 py-4 text-sm font-medium">
+                  {position.totalPrice.toLocaleString('de-DE', { minimumFractionDigits: 2 })}
+                </td>
+                <td className="px-4 py-4 text-sm">
+                  {editingId === position.id ? (
+                    <button
+                      onClick={() => setEditingId(null)}
+                      className="text-green-600 hover:text-green-800"
+                    >
+                      <Save className="h-4 w-4" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setEditingId(position.id)}
+                      className="text-blue-600 hover:text-blue-800"
+                    >
+                      <Edit2 className="h-4 w-4" />
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot className="bg-gray-50">
+            <tr>
+              <td colSpan={5} className="px-4 py-3 text-right font-semibold">Gesamtsumme netto:</td>
+              <td className="px-4 py-3 font-bold">
+                {total.toLocaleString('de-DE', { minimumFractionDigits: 2 })} €
+              </td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+const CalculationTab: React.FC<{
+  positions: LVPosition[];
+  selectedStrategy: string;
+  setSelectedStrategy: (strategy: string) => void;
+  strategies: PriceStrategy[];
+}> = ({ positions, selectedStrategy, setSelectedStrategy, strategies }) => {
+  const total = positions.reduce((sum, pos) => sum + pos.totalPrice, 0);
+  const strategy = strategies.find(s => s.name === selectedStrategy) || strategies[1];
+  const adjustedTotal = total * strategy.factor;
+  
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-medium mb-4">Kalkulationsstrategie wählen</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {strategies.map(strat => (
+            <button
+              key={strat.name}
+              onClick={() => setSelectedStrategy(strat.name)}
+              className={`p-4 rounded-lg border-2 transition-all ${
+                selectedStrategy === strat.name
+                  ? 'border-blue-500 bg-blue-50'
+                  : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <h4 className="font-medium capitalize">{strat.name}</h4>
+              <p className="text-sm text-gray-600 mt-1">{strat.description}</p>
+              <p className="text-lg font-semibold mt-2">
+                Faktor: {strat.factor.toFixed(2)}
+              </p>
+            </button>
+          ))}
+        </div>
+      </div>
+      
+      <div className="bg-gray-50 rounded-lg p-6">
+        <h4 className="font-medium mb-4">Kalkulationsübersicht</h4>
+        <div className="space-y-2">
+          <div className="flex justify-between">
+            <span>Basissumme:</span>
+            <span>{total.toLocaleString('de-DE', { minimumFractionDigits: 2 })} €</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Strategiefaktor ({strategy.name}):</span>
+            <span>{strategy.factor.toFixed(2)}</span>
+          </div>
+          <div className="h-px bg-gray-300 my-2" />
+          <div className="flex justify-between text-lg font-semibold">
+            <span>Angebotssumme netto:</span>
+            <span>{adjustedTotal.toLocaleString('de-DE', { minimumFractionDigits: 2 })} €</span>
+          </div>
+          <div className="flex justify-between text-gray-600">
+            <span>zzgl. 19% MwSt:</span>
+            <span>{(adjustedTotal * 0.19).toLocaleString('de-DE', { minimumFractionDigits: 2 })} €</span>
+          </div>
+          <div className="h-px bg-gray-300 my-2" />
+          <div className="flex justify-between text-xl font-bold">
+            <span>Angebotssumme brutto:</span>
+            <span>{(adjustedTotal * 1.19).toLocaleString('de-DE', { minimumFractionDigits: 2 })} €</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ExportTab: React.FC<{
+  project: Project | null;
+  positions: LVPosition[];
+}> = ({ project, positions }) => {
+  const [exportFormat, setExportFormat] = useState<'pdf' | 'gaeb' | 'excel'>('pdf');
+  
+  const handleExport = () => {
+    alert(`Export als ${exportFormat.toUpperCase()} wird vorbereitet...`);
+  };
+  
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-medium mb-4">Exportformat wählen</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <button
+            onClick={() => setExportFormat('pdf')}
+            className={`p-4 rounded-lg border-2 transition-all ${
+              exportFormat === 'pdf' ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
+            }`}
+          >
+            <FileText className="h-8 w-8 mx-auto mb-2 text-red-600" />
+            <h4 className="font-medium">PDF</h4>
+            <p className="text-sm text-gray-600 mt-1">Formatiertes Dokument</p>
+          </button>
+          <button
+            onClick={() => setExportFormat('gaeb')}
+            className={`p-4 rounded-lg border-2 transition-all ${
+              exportFormat === 'gaeb' ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
+            }`}
+          >
+            <FileDown className="h-8 w-8 mx-auto mb-2 text-blue-600" />
+            <h4 className="font-medium">GAEB</h4>
+            <p className="text-sm text-gray-600 mt-1">X31 / D86 Format</p>
+          </button>
+          <button
+            onClick={() => setExportFormat('excel')}
+            className={`p-4 rounded-lg border-2 transition-all ${
+              exportFormat === 'excel' ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
+            }`}
+          >
+            <FileSpreadsheet className="h-8 w-8 mx-auto mb-2 text-green-600" />
+            <h4 className="font-medium">Excel</h4>
+            <p className="text-sm text-gray-600 mt-1">XLSX Format</p>
+          </button>
+        </div>
+      </div>
+      
+      <div className="bg-gray-50 rounded-lg p-6">
+        <h4 className="font-medium mb-4">Exportoptionen</h4>
+        <div className="space-y-4">
+          <label className="flex items-center">
+            <input type="checkbox" className="mr-2" defaultChecked />
+            <span>Firmenlogo einbinden</span>
+          </label>
+          <label className="flex items-center">
+            <input type="checkbox" className="mr-2" defaultChecked />
+            <span>Detaillierte Leistungsbeschreibungen</span>
+          </label>
+          <label className="flex items-center">
+            <input type="checkbox" className="mr-2" />
+            <span>Preise ausblenden (nur Mengen)</span>
+          </label>
+        </div>
+      </div>
+      
+      <button
+        onClick={handleExport}
+        className="flex items-center justify-center w-full md:w-auto px-6 py-3 bg-green-600 text-white rounded-md hover:bg-green-700"
+      >
+        <Download className="h-5 w-5 mr-2" />
+        Als {exportFormat.toUpperCase()} exportieren
+      </button>
+    </div>
+  );
+};
+
+// === SETTINGS VIEW ===
+const SettingsView: React.FC<{ user: User | null }> = ({ user }) => {
+  return (
+    <div className="max-w-4xl mx-auto space-y-6">
+      <h2 className="text-2xl font-semibold mb-6">Einstellungen</h2>
+      
+      <div className="bg-white rounded-lg shadow p-6">
+        <h3 className="text-lg font-medium mb-4">Firmendaten</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Firmenname
+            </label>
+            <input
+              type="text"
+              defaultValue={user?.companyName}
+              className="w-full px-4 py-2 border border-gray-300 rounded-md"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              E-Mail
+            </label>
+            <input
+              type="email"
+              defaultValue={user?.email}
+              className="w-full px-4 py-2 border border-gray-300 rounded-md"
+            />
+          </div>
+        </div>
+      </div>
+      
+      <div className="bg-white rounded-lg shadow p-6">
+        <h3 className="text-lg font-medium mb-4">API-Konfiguration</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              OpenAI API-Schlüssel
+            </label>
+            <input
+              type="password"
+              placeholder="sk-..."
+              className="w-full px-4 py-2 border border-gray-300 rounded-md"
+            />
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <div className="flex items-start">
+              <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5 mr-3" />
+              <div>
+                <p className="text-sm text-blue-800">
+                  Der API-Schlüssel wird sicher verschlüsselt gespeichert und nur für KI-Analysen verwendet.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <button className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+        Einstellungen speichern
+      </button>
+    </div>
+  );
+};
+
+export default App;
