@@ -1,0 +1,705 @@
+# LV-Generator Pro - Installations- und Deployment-Anleitung
+
+## 📋 Voraussetzungen
+
+### Entwicklungsumgebung
+- **Node.js**: Version 18.0 oder höher
+- **npm** oder **yarn**: Paketmanager
+- **Git**: Für Versionskontrolle
+- **Docker**: Für Datenbank und Services (optional, aber empfohlen)
+- **Code-Editor**: VS Code wird empfohlen
+
+### Accounts und API-Schlüssel
+- **GitHub Account**: Für Code-Repository
+- **OpenAI API Key**: Für GPT-4 Integration
+- **PostgreSQL**: Datenbank (lokal oder Cloud)
+- **Redis**: Für Queue und Cache
+- **Hosting-Accounts**: Vercel/Railway/Render
+
+## 🚀 Schritt-für-Schritt Installation
+
+### 1. Projekt Setup
+
+```bash
+# Erstellen Sie das Projektverzeichnis
+mkdir lv-generator-pro
+cd lv-generator-pro
+
+# Git initialisieren
+git init
+
+# Grundstruktur erstellen
+mkdir -p frontend backend database docker scripts docs
+```
+
+### 2. Backend Setup
+
+```bash
+cd backend
+
+# Package.json initialisieren
+npm init -y
+
+# Abhängigkeiten installieren
+npm install express cors helmet morgan dotenv
+npm install @prisma/client prisma
+npm install openai @anthropic-ai/sdk
+npm install puppeteer cheerio
+npm install bull redis
+npm install jsonwebtoken passport passport-jwt
+npm install multer aws-sdk
+npm install joi celebrate
+npm install winston
+
+# Dev-Abhängigkeiten
+npm install -D typescript @types/node @types/express
+npm install -D nodemon ts-node
+npm install -D @types/cors @types/morgan @types/jsonwebtoken
+npm install -D jest @types/jest ts-jest
+npm install -D eslint @typescript-eslint/parser @typescript-eslint/eslint-plugin
+```
+
+#### Backend package.json Scripts
+
+```json
+{
+  "scripts": {
+    "dev": "nodemon --exec ts-node src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts",
+    "migrate": "prisma migrate dev",
+    "generate": "prisma generate",
+    "seed": "ts-node prisma/seed.ts"
+  }
+}
+```
+
+#### TypeScript Konfiguration (tsconfig.json)
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "moduleResolution": "node",
+    "allowJs": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+#### Prisma Schema (prisma/schema.prisma)
+
+```prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String    @id @default(uuid())
+  email       String    @unique
+  password    String
+  companyName String?
+  role        String    @default("user")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  projects    Project[]
+}
+
+model Project {
+  id          String        @id @default(uuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id])
+  name        String
+  tenderUrl   String?
+  location    String?
+  timeframe   String?
+  status      String        @default("draft")
+  metadata    Json?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  positions   LVPosition[]
+}
+
+model LVPosition {
+  id               String   @id @default(uuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id])
+  positionNumber   String
+  shortDescription String
+  longDescription  String?
+  quantity         Float
+  unit             String
+  unitPrice        Float?
+  totalPrice       Float?
+  trade            String?
+  confidenceScore  Float?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model PriceHistory {
+  id           String   @id @default(uuid())
+  positionType String
+  description  String?
+  region       String
+  price        Float
+  currency     String   @default("EUR")
+  source       String?
+  recordedAt   DateTime @default(now())
+}
+```
+
+### 3. Frontend Setup
+
+```bash
+cd ../frontend
+
+# React App mit TypeScript erstellen
+npx create-react-app . --template typescript
+
+# Zusätzliche Abhängigkeiten
+npm install axios react-query
+npm install zustand
+npm install react-router-dom @types/react-router-dom
+npm install tailwindcss @headlessui/react
+npm install lucide-react
+npm install react-hot-toast
+npm install recharts
+npm install jspdf
+npm install xlsx
+npm install socket.io-client
+
+# Dev-Abhängigkeiten
+npm install -D @tailwindcss/forms @tailwindcss/typography
+```
+
+#### Tailwind CSS Setup
+
+```bash
+# Tailwind initialisieren
+npx tailwindcss init -p
+```
+
+#### tailwind.config.js
+
+```javascript
+module.exports = {
+  content: [
+    "./src/**/*.{js,jsx,ts,tsx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        primary: {
+          50: '#eff6ff',
+          500: '#3b82f6',
+          600: '#2563eb',
+          700: '#1d4ed8',
+        }
+      }
+    },
+  },
+  plugins: [
+    require('@tailwindcss/forms'),
+    require('@tailwindcss/typography'),
+  ],
+}
+```
+
+#### Frontend src/index.css
+
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+}
+```
+
+### 4. Docker Setup
+
+#### docker-compose.yml
+
+```yaml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: lv_postgres
+    environment:
+      POSTGRES_DB: lv_generator
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - lv_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: lv_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - lv_network
+
+  minio:
+    image: minio/minio
+    container_name: lv_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - lv_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lv_backend
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:postgres123@postgres:5432/lv_generator
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: your-jwt-secret
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    ports:
+      - "3001:3001"
+    networks:
+      - lv_network
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: lv_frontend
+    environment:
+      REACT_APP_API_URL: http://localhost:3001
+    ports:
+      - "3000:3000"
+    networks:
+      - lv_network
+    depends_on:
+      - backend
+
+networks:
+  lv_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:
+```
+
+### 5. Umgebungsvariablen
+
+#### .env (Root-Verzeichnis)
+
+```env
+# Database
+DATABASE_URL=postgresql://postgres:postgres123@localhost:5432/lv_generator
+
+# Redis
+REDIS_URL=redis://localhost:6379
+
+# JWT
+JWT_SECRET=your-super-secret-jwt-key-change-this
+
+# API Keys
+OPENAI_API_KEY=sk-your-openai-api-key
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
+
+# Storage
+MINIO_ENDPOINT=localhost
+MINIO_PORT=9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_USE_SSL=false
+
+# Email
+SENDGRID_API_KEY=your-sendgrid-key
+
+# Frontend URL
+FRONTEND_URL=http://localhost:3000
+
+# Backend URL
+BACKEND_URL=http://localhost:3001
+```
+
+### 6. Datenbank Setup
+
+```bash
+# Docker-Container starten
+docker-compose up -d postgres redis
+
+# Warten bis PostgreSQL bereit ist
+sleep 5
+
+# Migrationen ausführen
+cd backend
+npx prisma migrate dev --name init
+
+# Seed-Daten laden (optional)
+npx ts-node prisma/seed.ts
+```
+
+#### Seed-Datei (backend/prisma/seed.ts)
+
+```typescript
+import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
+
+const prisma = new PrismaClient();
+
+async function main() {
+  // Demo-Benutzer erstellen
+  const hashedPassword = await bcrypt.hash('demo123', 10);
+  
+  const user = await prisma.user.create({
+    data: {
+      email: 'demo@example.com',
+      password: hashedPassword,
+      companyName: 'Demo Bau GmbH',
+      role: 'admin'
+    }
+  });
+
+  // Demo-Preisdaten
+  const priceData = [
+    {
+      positionType: 'Trockenbau Ständerwand',
+      description: 'Gipskarton-Ständerwand, beidseitig beplankt',
+      region: 'München',
+      price: 45.50,
+      source: 'Historisch'
+    },
+    {
+      positionType: 'Malerarbeiten Innen',
+      description: 'Dispersionsfarbe, 2x Anstrich',
+      region: 'München',
+      price: 12.80,
+      source: 'Historisch'
+    }
+  ];
+
+  await prisma.priceHistory.createMany({
+    data: priceData
+  });
+
+  console.log('Seed-Daten erfolgreich geladen');
+}
+
+main()
+  .catch(e => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+```
+
+### 7. Entwicklungsserver starten
+
+```bash
+# Terminal 1: Backend
+cd backend
+npm run dev
+
+# Terminal 2: Frontend
+cd frontend
+npm start
+
+# Terminal 3: Worker für Background-Jobs
+cd backend
+npm run worker
+```
+
+## 🌐 Production Deployment
+
+### Option 1: Docker Deployment (Empfohlen)
+
+```bash
+# Production-Images bauen
+docker-compose -f docker-compose.prod.yml build
+
+# Container starten
+docker-compose -f docker-compose.prod.yml up -d
+
+# Logs prüfen
+docker-compose logs -f
+```
+
+### Option 2: Cloud Deployment
+
+#### Backend auf Railway/Render
+
+1. **Railway Setup**:
+```bash
+# Railway CLI installieren
+npm install -g @railway/cli
+
+# Login
+railway login
+
+# Neues Projekt
+railway init
+
+# Umgebungsvariablen setzen
+railway variables set DATABASE_URL="..."
+railway variables set OPENAI_API_KEY="..."
+
+# Deployment
+railway up
+```
+
+2. **Render Setup**:
+- Erstellen Sie einen neuen Web Service
+- Verbinden Sie Ihr GitHub Repository
+- Setzen Sie Build Command: `npm install && npm run build`
+- Setzen Sie Start Command: `npm start`
+- Fügen Sie alle Umgebungsvariablen hinzu
+
+#### Frontend auf Vercel
+
+```bash
+# Vercel CLI installieren
+npm install -g vercel
+
+# Im Frontend-Verzeichnis
+cd frontend
+
+# Deployment
+vercel
+
+# Umgebungsvariablen setzen
+vercel env add REACT_APP_API_URL
+```
+
+### Datenbank-Hosting
+
+#### Option 1: Supabase (PostgreSQL)
+- Kostenloses Tier verfügbar
+- Automatische Backups
+- Eingebaute Authentifizierung
+
+#### Option 2: PlanetScale
+- MySQL-kompatibel
+- Serverless
+- Automatische Skalierung
+
+#### Option 3: Neon
+- PostgreSQL
+- Serverless
+- Branching für Entwicklung
+
+## 🔧 Monitoring und Wartung
+
+### Logging Setup
+
+```typescript
+// backend/src/utils/logger.ts
+import winston from 'winston';
+
+export const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.json(),
+  transports: [
+    new winston.transports.File({ filename: 'error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'combined.log' }),
+    new winston.transports.Console({
+      format: winston.format.simple()
+    })
+  ]
+});
+```
+
+### Health Checks
+
+```typescript
+// backend/src/routes/health.ts
+app.get('/health', async (req, res) => {
+  const checks = {
+    server: 'ok',
+    database: 'checking',
+    redis: 'checking',
+    timestamp: new Date().toISOString()
+  };
+
+  try {
+    // Database check
+    await prisma.$queryRaw`SELECT 1`;
+    checks.database = 'ok';
+    
+    // Redis check
+    await redisClient.ping();
+    checks.redis = 'ok';
+    
+    res.json(checks);
+  } catch (error) {
+    res.status(503).json({ ...checks, error: error.message });
+  }
+});
+```
+
+### Backup-Strategie
+
+```bash
+# Automatisches Backup-Script
+#!/bin/bash
+# backup.sh
+
+DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_DIR="/backups"
+
+# PostgreSQL Backup
+docker exec lv_postgres pg_dump -U postgres lv_generator > $BACKUP_DIR/db_$DATE.sql
+
+# Dateien-Backup
+tar -czf $BACKUP_DIR/files_$DATE.tar.gz /app/uploads
+
+# Alte Backups löschen (älter als 30 Tage)
+find $BACKUP_DIR -name "*.sql" -mtime +30 -delete
+find $BACKUP_DIR -name "*.tar.gz" -mtime +30 -delete
+```
+
+## 📊 Performance-Optimierung
+
+### Frontend-Optimierung
+
+```javascript
+// Lazy Loading für Routen
+const ProjectView = lazy(() => import('./views/ProjectView'));
+const SettingsView = lazy(() => import('./views/SettingsView'));
+
+// Code Splitting
+<Suspense fallback={<LoadingSpinner />}>
+  <Routes>
+    <Route path="/project/:id" element={<ProjectView />} />
+    <Route path="/settings" element={<SettingsView />} />
+  </Routes>
+</Suspense>
+```
+
+### Backend-Optimierung
+
+```typescript
+// Caching-Strategie
+const getCachedPrices = async (region: string) => {
+  const cacheKey = `prices:${region}`;
+  
+  // Aus Cache lesen
+  const cached = await redis.get(cacheKey);
+  if (cached) return JSON.parse(cached);
+  
+  // Aus DB laden
+  const prices = await prisma.priceHistory.findMany({
+    where: { region },
+    orderBy: { recordedAt: 'desc' },
+    take: 100
+  });
+  
+  // In Cache speichern (24 Stunden)
+  await redis.setex(cacheKey, 86400, JSON.stringify(prices));
+  
+  return prices;
+};
+```
+
+## 🐛 Fehlerbehebung
+
+### Häufige Probleme
+
+1. **CORS-Fehler**:
+```typescript
+// Korrekte CORS-Konfiguration
+app.use(cors({
+  origin: process.env.FRONTEND_URL,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+```
+
+2. **Datenbankverbindung**:
+```bash
+# Connection String prüfen
+psql $DATABASE_URL
+
+# Migrationen zurücksetzen
+npx prisma migrate reset
+```
+
+3. **Redis-Verbindung**:
+```bash
+# Redis-CLI testen
+redis-cli ping
+```
+
+## 🎯 Nächste Schritte
+
+1. **Sicherheit härten**:
+   - Rate Limiting implementieren
+   - Input-Validierung verstärken
+   - Security Headers setzen
+
+2. **Features erweitern**:
+   - Multi-Tenancy
+   - Erweiterte Berichterstellung
+   - API-Versionierung
+
+3. **Skalierung vorbereiten**:
+   - Load Balancing
+   - Horizontale Skalierung
+   - CDN-Integration
+
+## 📞 Support
+
+Bei Fragen oder Problemen:
+- GitHub Issues erstellen
+- Dokumentation konsultieren
+- Community-Forum nutzen
+
+---
+
+**Viel Erfolg mit Ihrem LV-Generator Pro!** 🚀
